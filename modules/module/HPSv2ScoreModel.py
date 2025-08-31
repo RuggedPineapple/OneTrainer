@@ -1,8 +1,9 @@
-import huggingface_hub
-import open_clip
 import torch
 from torch import nn
 from torchvision.transforms import transforms
+
+import huggingface_hub
+import open_clip
 
 
 class HPSv2ScoreModel(nn.Module):
@@ -10,7 +11,7 @@ class HPSv2ScoreModel(nn.Module):
             self,
             dtype: torch.dtype,
     ):
-        super(HPSv2ScoreModel, self).__init__()
+        super().__init__()
         self.dtype = dtype
 
         self.model = self.__load_open_clip_model()
@@ -51,7 +52,7 @@ class HPSv2ScoreModel(nn.Module):
         model_path = huggingface_hub.hf_hub_download(
             "xswu/HPSv2", "HPS_v2_compressed.pt"
         )
-        checkpoint = torch.load(model_path)
+        checkpoint = torch.load(model_path, weights_only=True)
         open_clip_model.load_state_dict(checkpoint['state_dict'])
 
         return open_clip_model

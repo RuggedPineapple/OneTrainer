@@ -1,7 +1,7 @@
 import customtkinter as ctk
 
 
-class ToolTip(object):
+class ToolTip:
     """
     create a tooltip for a given widget
     """
@@ -45,7 +45,7 @@ class ToolTip(object):
         self.tw = ctk.CTkToplevel(self.widget)
         # Leaves only the label and removes the app window
         self.tw.wm_overrideredirect(True)
-        self.tw.wm_geometry("+%d+%d" % (x, y))
+        self.tw.wm_geometry(f"+{x}+{y}")
         label = ctk.CTkLabel(self.tw, text=self.text, justify='left', wraplength=self.wraplength)
         label.pack(padx=8, pady=8)
 

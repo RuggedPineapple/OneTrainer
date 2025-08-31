@@ -1,8 +1,8 @@
-import torch
-from diffusers import DDIMScheduler
-
 import modules.util.convert.convert_diffusers_to_ckpt_util as util
-from modules.util.enum.ModelType import ModelType
+
+import torch
+
+from diffusers import DDIMScheduler
 
 
 def __map_unet_down_blocks(in_states: dict, out_prefix: str, in_prefix: str) -> dict:
@@ -136,9 +136,15 @@ def __map_text_encoder_2(in_states: dict, out_prefix: str, in_prefix: str) -> di
 
     return out_states
 
+def __map_vpred(noise_scheduler: DDIMScheduler) -> dict:
+    out_states = {}
+
+    if noise_scheduler.config.prediction_type == 'v_prediction':
+        out_states["v_pred"] = torch.tensor([])
+
+    return out_states
 
 def convert_sdxl_diffusers_to_ckpt(
-        model_type: ModelType,
         vae_state_dict: dict,
         unet_state_dict: dict,
         text_encoder_1_state_dict: dict,
@@ -152,5 +158,6 @@ def convert_sdxl_diffusers_to_ckpt(
     state_dict |= __map_text_encoder_1(text_encoder_1_state_dict, "conditioner.embedders.0.transformer", "")
     state_dict |= __map_text_encoder_2(text_encoder_2_state_dict, "conditioner.embedders.1", "text_model")
     state_dict |= util.map_noise_scheduler(noise_scheduler)
+    state_dict |= __map_vpred(noise_scheduler)
 
     return state_dict

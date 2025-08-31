@@ -1,32 +1,23 @@
-from typing import Iterable
+from modules.model.StableDiffusionModel import StableDiffusionModel
+from modules.modelSetup.BaseStableDiffusionSetup import BaseStableDiffusionSetup
+from modules.util.config.TrainConfig import TrainConfig
+from modules.util.NamedParameterGroup import NamedParameterGroupCollection
+from modules.util.optimizer_util import init_model_parameters
+from modules.util.TrainProgress import TrainProgress
 
 import torch
-from torch import Tensor
-from torch.nn import Parameter
-
-from modules.model.StableDiffusionModel import StableDiffusionModel, StableDiffusionModelEmbedding
-from modules.modelSetup.BaseStableDiffusionSetup import BaseStableDiffusionSetup
-from modules.modelSetup.mixin.ModelSetupClipEmbeddingMixin import ModelSetupClipEmbeddingMixin
-from modules.util import create
-from modules.util.TrainProgress import TrainProgress
-from modules.util.config.TrainConfig import TrainConfig
 
 
 class StableDiffusionEmbeddingSetup(
     BaseStableDiffusionSetup,
-    ModelSetupClipEmbeddingMixin,
 ):
-    all_original_token_embeds: Tensor
-    trainable_token_embeds_mask: list[bool]
-    untrainable_token_embeds_mask: list[bool]
-
     def __init__(
             self,
             train_device: torch.device,
             temp_device: torch.device,
             debug_mode: bool,
     ):
-        super(StableDiffusionEmbeddingSetup, self).__init__(
+        super().__init__(
             train_device=train_device,
             temp_device=temp_device,
             debug_mode=debug_mode,
@@ -36,74 +27,54 @@ class StableDiffusionEmbeddingSetup(
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
-    ) -> Iterable[Parameter]:
-        return model.text_encoder.get_input_embeddings().parameters()
+    ) -> NamedParameterGroupCollection:
+        parameter_group_collection = NamedParameterGroupCollection()
 
-    def create_parameters_for_optimizer(
+        self._add_embedding_param_groups(
+            model.all_text_encoder_embeddings(), parameter_group_collection, config.embedding_learning_rate,
+            "embeddings"
+        )
+
+        return parameter_group_collection
+
+    def __setup_requires_grad(
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
-    ) -> Iterable[Parameter] | list[dict]:
-        return [
-            self.create_param_groups(
-                config,
-                model.text_encoder.get_input_embeddings().parameters(),
-                config.learning_rate,
-            )
-        ]
+    ):
+        self._setup_embeddings_requires_grad(model, config)
+        model.text_encoder.requires_grad_(False)
+        model.vae.requires_grad_(False)
+        model.unet.requires_grad_(False)
 
     def setup_model(
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
     ):
-        model.text_encoder.requires_grad_(False)
-        model.text_encoder.get_input_embeddings().requires_grad_(True)
-        model.vae.requires_grad_(False)
-        model.unet.requires_grad_(False)
-
         model.text_encoder.get_input_embeddings().to(dtype=config.embedding_weight_dtype.torch_dtype())
 
-        if len(model.embeddings) == 0:
-            vector = self._create_new_embedding(
-                model.tokenizer,
-                model.text_encoder,
-                config.embeddings[0].initial_embedding_text,
-                config.embeddings[0].token_count,
-            )
+        if config.rescale_noise_scheduler_to_zero_terminal_snr:
+            model.rescale_noise_scheduler_to_zero_terminal_snr()
+            model.force_v_prediction()
 
-            model.embeddings = [StableDiffusionModelEmbedding(vector, 'embedding')]
+        self._remove_added_embeddings_from_tokenizer(model.tokenizer)
+        self._setup_embeddings(model, config)
+        self._setup_embedding_wrapper(model, config)
+        self.__setup_requires_grad(model, config)
 
-        original_token_embeds, untrainable_token_ids = self._add_embeddings_to_clip(
-            model.tokenizer,
-            model.text_encoder,
-            [(model.embeddings[0].text_encoder_vector, model.embeddings[0].text_tokens)],
-        )
-        model.all_text_encoder_original_token_embeds = original_token_embeds
-        model.text_encoder_untrainable_token_embeds_mask = untrainable_token_ids
-
-        model.optimizer = create.create_optimizer(
-            self.create_parameters_for_optimizer(model, config), model.optimizer_state_dict, config
-        )
-        del model.optimizer_state_dict
-
-        model.ema = create.create_ema(
-            self.create_parameters(model, config), model.ema_state_dict, config
-        )
-        del model.ema_state_dict
-
-        self.setup_optimizations(model, config)
+        init_model_parameters(model, self.create_parameters(model, config), self.train_device)
 
     def setup_train_device(
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
     ):
-        vae_on_train_device = self.debug_mode or config.align_prop_loss
+        vae_on_train_device = self.debug_mode or not config.latent_caching
 
-        model.text_encoder.to(self.train_device)
-        model.vae.to(self.train_device if vae_on_train_device else self.temp_device)
-        model.unet.to(self.train_device)
+        model.text_encoder_to(self.train_device)
+        model.vae_to(self.train_device if vae_on_train_device else self.temp_device)
+        model.unet_to(self.train_device)
         model.depth_estimator_to(self.temp_device)
 
         model.text_encoder.eval()
@@ -116,19 +87,7 @@ class StableDiffusionEmbeddingSetup(
             config: TrainConfig,
             train_progress: TrainProgress
     ):
-        self._embeddigns_after_optimizer_step(
-            model.text_encoder.get_input_embeddings(),
-            model.all_text_encoder_original_token_embeds,
-            model.text_encoder_untrainable_token_embeds_mask,
-        )
-
-    def report_learning_rates(
-            self,
-            model,
-            config,
-            scheduler,
-            tensorboard
-    ):
-        lr = scheduler.get_last_lr()[0]
-        lr = config.optimizer.optimizer.maybe_adjust_lrs([lr], model.optimizer)[0]
-        tensorboard.add_scalar("lr/embedding", lr, model.train_progress.global_step)
+        if config.preserve_embedding_norm:
+            self._normalize_output_embeddings(model.all_text_encoder_embeddings())
+            model.embedding_wrapper.normalize_embeddings()
+        self.__setup_requires_grad(model, config)

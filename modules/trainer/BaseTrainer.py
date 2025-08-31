@@ -1,7 +1,7 @@
-import time
+import os
+import subprocess
+import sys
 from abc import ABCMeta, abstractmethod
-
-import torch
 
 from modules.model.BaseModel import BaseModel
 from modules.modelLoader.BaseModelLoader import BaseModelLoader
@@ -9,19 +9,24 @@ from modules.modelSampler.BaseModelSampler import BaseModelSampler
 from modules.modelSaver.BaseModelSaver import BaseModelSaver
 from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.util import create
-from modules.util.TimedActionMixin import TimedActionMixin
-from modules.util.TrainProgress import TrainProgress
-from modules.util.config.TrainConfig import TrainConfig
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
+from modules.util.config.TrainConfig import TrainConfig
+from modules.util.TimedActionMixin import TimedActionMixin
+from modules.util.TrainProgress import TrainProgress
+
+import torch
 
 
 class BaseTrainer(
     TimedActionMixin,
     metaclass=ABCMeta,
 ):
+
+    tensorboard_subprocess: subprocess.Popen
+
     def __init__(self, config: TrainConfig, callbacks: TrainCallbacks, commands: TrainCommands):
-        super(BaseTrainer, self).__init__()
+        super().__init__()
         self.config = config
         self.callbacks = callbacks
         self.commands = commands
@@ -56,7 +61,7 @@ class BaseTrainer(
             self.config.debug_mode,
         )
 
-    def create_data_loader(self, model: BaseModel, train_progress: TrainProgress):
+    def create_data_loader(self, model: BaseModel, train_progress: TrainProgress, is_validation=False):
         return create.create_data_loader(
             self.train_device,
             self.temp_device,
@@ -65,6 +70,7 @@ class BaseTrainer(
             self.config.training_method,
             self.config,
             train_progress,
+            is_validation,
         )
 
     def create_model_saver(self) -> BaseModelSaver:
@@ -78,4 +84,23 @@ class BaseTrainer(
             self.config.model_type,
             self.config.training_method
         )
+    def _start_tensorboard(self):
+        tensorboard_executable = os.path.join(os.path.dirname(sys.executable), "tensorboard")
+        tensorboard_log_dir = os.path.join(self.config.workspace_dir, "tensorboard")
 
+        tensorboard_args = [
+            tensorboard_executable,
+            "--logdir",
+            tensorboard_log_dir,
+            "--port",
+            str(self.config.tensorboard_port),
+            "--samples_per_plugin=images=100,scalars=10000",
+        ]
+
+        if self.config.tensorboard_expose:
+            tensorboard_args.append("--bind_all")
+
+        self.tensorboard_subprocess = subprocess.Popen(tensorboard_args)
+
+    def _stop_tensorboard(self):
+        self.tensorboard_subprocess.kill()

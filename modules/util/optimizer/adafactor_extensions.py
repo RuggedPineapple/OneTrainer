@@ -6,10 +6,11 @@
 
 import math
 
-import torch
-from transformers import Adafactor
-
 from modules.util.bf16_stochastic_rounding import copy_stochastic_
+
+import torch
+
+from transformers import Adafactor
 
 
 @torch.no_grad()
@@ -90,13 +91,8 @@ def step_adafactor_parameter(self, p, group, i):
 
     if p.dtype == torch.bfloat16 and self.stochastic_rounding:
         copy_stochastic_(p, p_data_fp32)
-    if p.dtype == torch.float16:
-        copy_stochastic_(p, p_data_fp32)
-    elif p.dtype == torch.float16:
+    if p.dtype in {torch.float16, torch.bfloat16}:
         p.copy_(p_data_fp32)
-
-        if p.dtype in {torch.float16, torch.bfloat16}:
-            p.copy_(p_data_fp32)
 
 
 @torch.no_grad()

@@ -1,6 +1,13 @@
 import torch
 from torch import Tensor
 
+generator = None
+
+def set_seed(seed: int, device: torch.device):
+    global generator
+    if generator is None or generator.device != device:
+        generator = torch.Generator(device=device)
+    generator.manual_seed(seed)
 
 def copy_stochastic_(target: Tensor, source: Tensor):
     """
@@ -10,12 +17,17 @@ def copy_stochastic_(target: Tensor, source: Tensor):
         target: the target tensor with dtype=bfloat16
         source: the target tensor with dtype=float32
     """
+
+    global generator
+
     # create a random 16 bit integer
-    result = torch.randint_like(
-        source,
+    result = torch.randint(
+        size=source.shape,
+        device=source.device,
         dtype=torch.int32,
         low=0,
         high=(1 << 16),
+        generator=generator,
     )
 
     # add the random number to the lower 16 bit of the mantissa
@@ -39,10 +51,7 @@ def add_stochastic_(input: Tensor, other: Tensor, alpha: float = 1.0):
         other: the other tensor
         alpha: a multiplier for other
     """
-    if other.dtype == torch.float32:
-        result = other.clone()
-    else:
-        result = other.to(dtype=torch.float32)
+    result = other.clone() if other.dtype == torch.float32 else other.to(dtype=torch.float32)
 
     result.add_(input, alpha=alpha)
     copy_stochastic_(input, result)
@@ -58,10 +67,7 @@ def addcdiv_stochastic_(input: Tensor, tensor1: Tensor, tensor2: Tensor, value: 
         tensor2: the denominator tensor
         value: a multiplier for tensor1/tensor2
     """
-    if input.dtype == torch.float32:
-        result = input.clone()
-    else:
-        result = input.to(dtype=torch.float32)
+    result = input.clone() if input.dtype == torch.float32 else input.to(dtype=torch.float32)
 
     result.addcdiv_(tensor1, tensor2, value=value)
     copy_stochastic_(input, result)

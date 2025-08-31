@@ -1,12 +1,12 @@
 import time
 
-from modules.util.TrainProgress import TrainProgress
 from modules.util.enum.TimeUnit import TimeUnit
+from modules.util.TrainProgress import TrainProgress
 
 
 class TimedActionMixin:
     def __init__(self):
-        super(TimedActionMixin, self).__init__()
+        super().__init__()
         self.__previous_action = {}
         self.__start_time = time.time()
 
@@ -83,9 +83,9 @@ class TimedActionMixin:
 
         match unit:
             case TimeUnit.EPOCH:
-                return train_progress.epoch > int(delay)
+                return (train_progress.epoch + 1) > int(delay)
             case TimeUnit.STEP:
-                return train_progress.global_step > int(delay)
+                return (train_progress.global_step + 1) > int(delay)
             case TimeUnit.SECOND:
                 seconds_since_start = time.time() - self.__start_time
                 return seconds_since_start > delay

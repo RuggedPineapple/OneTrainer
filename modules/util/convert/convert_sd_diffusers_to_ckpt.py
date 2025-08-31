@@ -1,9 +1,9 @@
-import torch
-from diffusers import DDIMScheduler
-
 import modules.util.convert.convert_diffusers_to_ckpt_util as util
 from modules.util.enum.ModelType import ModelType
 
+import torch
+
+from diffusers import DDIMScheduler
 
 
 def __map_unet_down_blocks(in_states: dict, out_prefix: str, in_prefix: str) -> dict:
@@ -159,5 +159,3 @@ def convert_sd_diffusers_to_ckpt(
     state_dict |= util.map_noise_scheduler(noise_scheduler)
 
     return state_dict
-
-

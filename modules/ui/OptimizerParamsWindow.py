@@ -1,12 +1,18 @@
+import contextlib
 from tkinter import TclError
-
-import customtkinter as ctk
 
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.enum.Optimizer import Optimizer
-from modules.util.optimizer_util import OPTIMIZER_DEFAULT_PARAMETERS, update_optimizer_config, load_optimizer_defaults, \
-    change_optimizer
+from modules.util.optimizer_util import (
+    OPTIMIZER_DEFAULT_PARAMETERS,
+    change_optimizer,
+    load_optimizer_defaults,
+    update_optimizer_config,
+)
 from modules.util.ui import components
+from modules.util.ui.ui_utils import set_window_icon
+
+import customtkinter as ctk
 
 
 class OptimizerParamsWindow(ctk.CTkToplevel):
@@ -17,27 +23,23 @@ class OptimizerParamsWindow(ctk.CTkToplevel):
             ui_state,
             *args, **kwargs,
     ):
-        ctk.CTkToplevel.__init__(self, parent, *args, **kwargs)
+        super().__init__(parent, *args, **kwargs)
 
         self.parent = parent
-
         self.train_config = train_config
         self.ui_state = ui_state
         self.optimizer_ui_state = ui_state.get_var("optimizer")
         self.protocol("WM_DELETE_WINDOW", self.on_window_close)
 
         self.title("Optimizer Settings")
-        self.geometry("800x400")
+        self.geometry("800x500")
         self.resizable(True, True)
-        self.wait_visibility()
-        self.grab_set()
-        self.focus_set()
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
         self.grid_columnconfigure(0, weight=1)
 
-        self.frame = ctk.CTkFrame(self)
+        self.frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
         self.frame.grid_columnconfigure(0, weight=0)
@@ -48,6 +50,12 @@ class OptimizerParamsWindow(ctk.CTkToplevel):
 
         components.button(self, 1, 0, "ok", command=self.on_window_close)
         self.main_frame(self.frame)
+
+        self.wait_visibility()
+        self.grab_set()
+        self.focus_set()
+        self.after(200, lambda: set_window_icon(self))
+
 
     def main_frame(self, master):
         # Optimizer
@@ -67,13 +75,11 @@ class OptimizerParamsWindow(ctk.CTkToplevel):
         self.create_dynamic_ui(master)
 
     def clear_dynamic_ui(self, master):
-        try:
+        with contextlib.suppress(TclError):
             for widget in master.winfo_children():
                 grid_info = widget.grid_info()
                 if int(grid_info["row"]) >= 1:
                     widget.destroy()
-        except TclError as e:
-            pass
 
     def create_dynamic_ui(
             self,
@@ -108,17 +114,22 @@ class OptimizerParamsWindow(ctk.CTkToplevel):
             'fused_back_pass': {'title': 'Fused Back Pass', 'tooltip': 'Whether to fuse the back propagation pass with the optimizer step. This reduces VRAM usage, but is not compatible with gradient accumulation.', 'type': 'bool'},
             'growth_rate': {'title': 'Growth Rate', 'tooltip': 'Limit for D estimate growth rate.', 'type': 'float'},
             'initial_accumulator_value': {'title': 'Initial Accumulator Value', 'tooltip': 'Initial value for Adagrad optimizer.', 'type': 'float'},
+            'initial_accumulator': {'title': 'Initial Accumulator', 'tooltip': 'Sets the starting value for both moment estimates to ensure numerical stability and balanced adaptive updates early in training.', 'type': 'float'},
             'is_paged': {'title': 'Is Paged', 'tooltip': 'Whether the optimizer\'s internal state should be paged to CPU.', 'type': 'bool'},
             'log_every': {'title': 'Log Every', 'tooltip': 'Intervals at which logging should occur.', 'type': 'int'},
             'lr_decay': {'title': 'LR Decay', 'tooltip': 'Rate at which learning rate decreases.', 'type': 'float'},
+            'lr_bump': {'title': 'LR Bump', 'tooltip': 'Rate at which learning rate increases or decreases.', 'type': 'float'},
+            'min_lr': {'title': 'Min LR', 'tooltip': 'Minimum learning rate threshold', 'type': 'float'},
+            'max_lr': {'title': 'Max LR', 'tooltip': 'Maximum learning rate threshold', 'type': 'float'},
             'max_unorm': {'title': 'Max Unorm', 'tooltip': 'Maximum value for gradient clipping by norms.', 'type': 'float'},
             'maximize': {'title': 'Maximize', 'tooltip': 'Whether to optimizer_maximize the optimization function.', 'type': 'bool'},
             'min_8bit_size': {'title': 'Min 8bit Size', 'tooltip': 'Minimum tensor size for 8-bit quantization.', 'type': 'int'},
+            'quant_block_size': {'title': 'Quant Block Size', 'tooltip': 'Size of a block of normalized 8-bit quantization data. Larger values increase memory efficiency at the cost of data precision.', 'type': 'int'},
             'momentum': {'title': 'optimizer_momentum', 'tooltip': 'Factor to accelerate SGD in relevant direction.', 'type': 'float'},
             'nesterov': {'title': 'Nesterov', 'tooltip': 'Whether to enable Nesterov optimizer_momentum.', 'type': 'bool'},
             'no_prox': {'title': 'No Prox', 'tooltip': 'Whether to use proximity updates or not.', 'type': 'bool'},
             'optim_bits': {'title': 'Optim Bits', 'tooltip': 'Number of bits used for optimization.', 'type': 'int'},
-            'percentile_clipping': {'title': 'Percentile Clipping', 'tooltip': 'Gradient clipping based on percentile values.', 'type': 'float'},
+            'percentile_clipping': {'title': 'Percentile Clipping', 'tooltip': 'Gradient clipping based on percentile values.', 'type': 'int'},
             'relative_step': {'title': 'Relative Step', 'tooltip': 'Whether to use a relative step size.', 'type': 'bool'},
             'safeguard_warmup': {'title': 'Safeguard Warmup', 'tooltip': 'Avoid issues during warm-up stage.', 'type': 'bool'},
             'scale_parameter': {'title': 'Scale Parameter', 'tooltip': 'Whether to scale the parameter or not.', 'type': 'bool'},
@@ -127,6 +138,35 @@ class OptimizerParamsWindow(ctk.CTkToplevel):
             'use_triton': {'title': 'Use Triton', 'tooltip': 'Whether Triton optimization should be used.', 'type': 'bool'},
             'warmup_init': {'title': 'Warmup Initialization', 'tooltip': 'Whether to warm-up the optimizer initialization.', 'type': 'bool'},
             'weight_decay': {'title': 'Weight Decay', 'tooltip': 'Regularization to prevent overfitting.', 'type': 'float'},
+            'weight_lr_power': {'title': 'Weight LR Power', 'tooltip': 'During warmup, the weights in the average will be equal to lr raised to this power. Set to 0 for no weighting.', 'type': 'float'},
+            'decoupled_decay': {'title': 'Decoupled Decay', 'tooltip': 'If set as True, then the optimizer uses decoupled weight decay as in AdamW.', 'type': 'bool'},
+            'fixed_decay': {'title': 'Fixed Decay', 'tooltip': '(When Decoupled Decay is True:) Applies fixed weight decay when True; scales decay with learning rate when False.', 'type': 'bool'},
+            'rectify': {'title': 'Rectify', 'tooltip': 'Perform the rectified update similar to RAdam.', 'type': 'bool'},
+            'degenerated_to_sgd': {'title': 'Degenerated to SGD', 'tooltip': 'Performs SGD update when gradient variance is high.', 'type': 'bool'},
+            'k': {'title': 'K', 'tooltip': 'Number of vector projected per iteration.', 'type': 'int'},
+            'xi': {'title': 'Xi', 'tooltip': 'Term used in vector projections to avoid division by zero.', 'type': 'float'},
+            'n_sma_threshold': {'title': 'N SMA Threshold', 'tooltip': 'Number of SMA threshold.', 'type': 'int'},
+            'ams_bound': {'title': 'AMS Bound', 'tooltip': 'Whether to use the AMSBound variant.', 'type': 'bool'},
+            'r': {'title': 'R', 'tooltip': 'EMA factor.', 'type': 'float'},
+            'adanorm': {'title': 'AdaNorm', 'tooltip': 'Whether to use the AdaNorm variant', 'type': 'bool'},
+            'adam_debias': {'title': 'Adam Debias', 'tooltip': 'Only correct the denominator to avoid inflating step sizes early in training.', 'type': 'bool'},
+            'slice_p': {'title': 'Slice parameters', 'tooltip': 'Reduce memory usage by calculating LR adaptation statistics on only every pth entry of each tensor. For values greater than 1 this is an approximation to standard Prodigy. Values ~11 are reasonable.', 'type': 'int'},
+            'cautious': {'title': 'Cautious', 'tooltip': 'Whether to use the Cautious variant.', 'type': 'bool'},
+            'weight_decay_by_lr': {'title': 'weight_decay_by_lr', 'tooltip': 'Automatically adjust weight decay based on lr', 'type': 'bool'},
+            'prodigy_steps': {'title': 'prodigy_steps', 'tooltip': 'Turn off Prodigy after N steps', 'type': 'int'},
+            'use_speed': {'title': 'use_speed', 'tooltip': 'use_speed method', 'type': 'bool'},
+            'split_groups': {'title': 'split_groups', 'tooltip': 'Use split groups when training multiple params(uNet,TE..)', 'type': 'bool'},
+            'split_groups_mean': {'title': 'split_groups_mean', 'tooltip': 'Use mean for split groups', 'type': 'bool'},
+            'factored': {'title': 'factored', 'tooltip': 'Use factored', 'type': 'bool'},
+            'factored_fp32': {'title': 'factored_fp32', 'tooltip': 'Use factored_fp32', 'type': 'bool'},
+            'use_stableadamw': {'title': 'use_stableadamw', 'tooltip': 'Use use_stableadamw for gradient scaling', 'type': 'bool'},
+            'use_muon_pp': {'title': 'use_muon_pp', 'tooltip': 'Use muon_pp method', 'type': 'bool'},
+            'use_cautious': {'title': 'use_cautious', 'tooltip': 'Use cautious method', 'type': 'bool'},
+            'use_grams': {'title': 'use_grams', 'tooltip': 'Use grams method', 'type': 'bool'},
+            'use_adopt': {'title': 'use_adopt', 'tooltip': 'Use adopt method', 'type': 'bool'},
+            'use_focus': {'title': 'use_focus', 'tooltip': 'Use focus method', 'type': 'bool'},
+            'use_paramiter_swapping': {'title': 'Paramiter Swapping', 'tooltip': 'Use of paramiter swapping algorithm', 'type': 'bool'},
+            'paramiter_swapping_factor': {'title': 'Paramiter Swapping Factor', 'tooltip': 'Factor when to swap paramiters', 'type': 'float'},
         }
         # @formatter:on
 

@@ -1,13 +1,12 @@
-import os
-import sys
+from util.import_util import script_imports
 
-sys.path.append(os.getcwd())
+script_imports()
 
 import json
 
-from modules.util.config.TrainConfig import TrainConfig
 from modules.module.GenerateLossesModel import GenerateLossesModel
 from modules.util.args.CalculateLossArgs import CalculateLossArgs
+from modules.util.config.TrainConfig import TrainConfig
 
 
 def main():

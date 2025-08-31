@@ -2,14 +2,15 @@ import os
 from abc import ABCMeta
 
 import torch
-from PIL import Image
 from torch import Tensor
 from torchvision import transforms
+
+from PIL import Image
 
 
 class ModelSetupDebugMixin(metaclass=ABCMeta):
     def __init__(self):
-        super(ModelSetupDebugMixin, self).__init__()
+        super().__init__()
 
     def _save_image(self, image_tensor: Tensor, directory: str, name: str, step: int, fromarray: bool = False):
         path = os.path.join(directory, "step-" + str(step) + "-" + name + ".png")
@@ -27,7 +28,7 @@ class ModelSetupDebugMixin(metaclass=ABCMeta):
             range_max = 1
             image_tensor = (image_tensor - range_min) / (range_max - range_min)
 
-            image = t(image_tensor.squeeze())
+            image = t(image_tensor.float().squeeze())
 
         image.save(path)
 
@@ -39,14 +40,14 @@ class ModelSetupDebugMixin(metaclass=ABCMeta):
         with open(path, "w") as f:
             f.write(text)
 
-    def _decode_tokens(self, tokens:Tensor, tokenizer):
+    def _decode_tokens(self, tokens: Tensor, tokenizer):
         return tokenizer.decode(
             token_ids=tokens[0],
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
 
-    # Decodes 4-channel latent to 3-channel RGB - technique appropriated from 
+    # Decodes 4-channel latent to 3-channel RGB - technique appropriated from
     # https://huggingface.co/blog/TimothyAlexisVass/explaining-the-sdxl-latent-space
     # Uses linear approximation based on first three channels of latent image (luminance, cyan/red, lime/purple)
     def _project_latent_to_image_sdxl(self, latent_tensor: Tensor):
@@ -77,6 +78,9 @@ class ModelSetupDebugMixin(metaclass=ABCMeta):
         )
 
         with torch.no_grad():
+            if latent_tensor.ndim == 5:
+                latent_tensor = latent_tensor[:, :, 0, :, :]
+
             result = torch.nn.functional.conv2d(latent_tensor, weight)
             result_min = result.min()
             result_max = result.max()

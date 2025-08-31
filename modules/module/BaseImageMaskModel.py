@@ -1,14 +1,17 @@
 import os
 from abc import ABCMeta, abstractmethod
-from typing import Callable
-
-import torch
-from PIL import Image
-from torch import Tensor
-from torchvision.transforms import transforms
-from tqdm import tqdm
+from collections.abc import Callable
+from pathlib import Path
 
 from modules.util import path_util
+from modules.util.image_util import load_image
+
+import torch
+from torch import Tensor
+from torchvision.transforms import transforms
+
+from PIL import Image
+from tqdm import tqdm
 
 
 class MaskSample:
@@ -33,7 +36,7 @@ class MaskSample:
 
     def get_image(self) -> Image:
         if self.image is None:
-            self.image = Image.open(self.image_filename).convert('RGB')
+            self.image = load_image(self.image_filename, 'RGB')
             self.height = self.image.height
             self.width = self.image.width
 
@@ -41,7 +44,7 @@ class MaskSample:
 
     def get_mask_tensor(self) -> Tensor:
         if self.mask_tensor is None and os.path.exists(self.mask_filename):
-            mask = Image.open(self.mask_filename).convert('L')
+            mask = load_image(self.mask_filename, 'L')
             mask = self.image2Tensor(mask)
             mask = mask.to(self.device)
             self.mask_tensor = mask.unsqueeze(0)
@@ -114,29 +117,21 @@ class MaskSample:
 
 class BaseImageMaskModel(metaclass=ABCMeta):
     @staticmethod
-    def __get_sample_filenames(sample_dir: str, include_subdirectories: bool = False) -> [str]:
-        def __is_supported_image_extension(filename: str) -> bool:
-            ext = os.path.splitext(filename)[1]
-            return path_util.is_supported_image_extension(ext) and '-masklabel.png' not in filename
+    def __get_sample_filenames(sample_dir: str, include_subdirectories: bool = False) -> list[str]:
+        sample_dir = Path(sample_dir)
 
-        filenames = []
-        if include_subdirectories:
-            for root, _, files in os.walk(sample_dir):
-                for filename in files:
-                    if __is_supported_image_extension(filename):
-                        filenames.append(os.path.join(root, filename))
-        else:
-            for filename in os.listdir(sample_dir):
-                if __is_supported_image_extension(filename):
-                    filenames.append(os.path.join(sample_dir, filename))
+        def __is_supported_image_extension(path: Path) -> bool:
+            ext = path.suffix
+            return path_util.is_supported_image_extension(ext) and '-masklabel.png' not in path.name
 
-        return filenames
+        recursive_prefix = "" if not include_subdirectories else "**/"
+        return [str(p) for p in sample_dir.glob(f'{recursive_prefix}*') if __is_supported_image_extension(p)]
 
     @abstractmethod
     def mask_image(
             self,
             filename: str,
-            prompts: [str],
+            prompts: list[str],
             mode: str = 'fill',
             alpha: float = 1.0,
             threshold: float = 0.3,
@@ -160,7 +155,6 @@ class BaseImageMaskModel(metaclass=ABCMeta):
             smooth_pixels (`int`): radius of a smoothing operation applied to the generated mask
             expand_pixels (`int`): amount of expansion of the generated mask in all directions
         """
-        pass
 
     def mask_images(
             self,
@@ -199,7 +193,7 @@ class BaseImageMaskModel(metaclass=ABCMeta):
         for i, filename in enumerate(tqdm(filenames)):
             try:
                 self.mask_image(filename, prompts, mode, alpha, threshold, smooth_pixels, expand_pixels)
-            except Exception as e:
+            except Exception:
                 if error_callback is not None:
                     error_callback(filename)
             if progress_callback is not None:

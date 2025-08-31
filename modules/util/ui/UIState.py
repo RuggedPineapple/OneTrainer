@@ -1,8 +1,11 @@
+import contextlib
 import tkinter as tk
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, get_origin, get_args, Callable
+from typing import Any
 
 from modules.util.config.BaseConfig import BaseConfig
+from modules.util.type_util import issubclass_safe
 
 
 class UIState:
@@ -14,7 +17,7 @@ class UIState:
         self.master = master
         self.obj = obj
         self.__vars = self.__create_vars(obj)
-        self.__var_traces = {name: {} for name in self.__vars.keys()}
+        self.__var_traces = {name: {} for name in self.__vars}
         self.__latest_var_trace_id = 0
 
     def update(self, obj):
@@ -41,7 +44,7 @@ class UIState:
         self.__var_traces[name].pop(trace_id)
 
     def __call_var_traces(self, name):
-        for trace_id, trace in self.__var_traces[name].items():
+        for trace in self.__var_traces[name].values():
             trace()
 
     def __set_str_var(self, obj, is_dict, name, var, nullable):
@@ -107,10 +110,8 @@ class UIState:
                 elif string_var == "-inf":
                     obj[name] = int("-inf")
                 else:
-                    try:
+                    with contextlib.suppress(ValueError):
                         obj[name] = int(string_var)
-                    except ValueError:
-                        pass
                 self.__call_var_traces(name)
         else:
             def update(_0, _1, _2):
@@ -122,10 +123,8 @@ class UIState:
                 elif string_var == "-inf":
                     setattr(obj, name, int("-inf"))
                 else:
-                    try:
+                    with contextlib.suppress(ValueError):
                         setattr(obj, name, int(string_var))
-                    except ValueError:
-                        pass
                 self.__call_var_traces(name)
 
         return update
@@ -141,10 +140,8 @@ class UIState:
                 elif string_var == "-inf":
                     obj[name] = float("-inf")
                 else:
-                    try:
+                    with contextlib.suppress(ValueError):
                         obj[name] = float(string_var)
-                    except ValueError:
-                        pass
                 self.__call_var_traces(name)
         else:
             def update(_0, _1, _2):
@@ -156,10 +153,8 @@ class UIState:
                 elif string_var == "-inf":
                     setattr(obj, name, float("-inf"))
                 else:
-                    try:
+                    with contextlib.suppress(ValueError):
                         setattr(obj, name, float(string_var))
-                    except ValueError:
-                        pass
                 self.__call_var_traces(name)
 
         return update
@@ -173,36 +168,30 @@ class UIState:
         if is_config:
             for name, var_type in obj.types.items():
                 obj_var = getattr(obj, name)
-                if issubclass(var_type, BaseConfig):
+                if issubclass_safe(var_type, BaseConfig):
                     var = UIState(self.master, obj_var)
                     new_vars[name] = var
-                elif var_type == list or get_origin(var_type) == list:
-                    if len(get_args(var_type)) > 0 and issubclass(get_args(var_type)[0], BaseConfig):
-                        # for lists, the first entry (if it exists) is used
-                        if obj_var is not None and len(obj_var) > 0:
-                            var = UIState(self.master, obj_var[0])
-                            new_vars[name] = var
-                elif var_type == str:
+                elif var_type is str:
                     var = tk.StringVar(master=self.master)
                     var.set("" if obj_var is None else obj_var)
                     var.trace_add("write", self.__set_str_var(obj, is_dict, name, var, obj.nullables[name]))
                     new_vars[name] = var
-                elif issubclass(var_type, Enum):
+                elif issubclass_safe(var_type, Enum):
                     var = tk.StringVar(master=self.master)
                     var.set("" if obj_var is None else str(obj_var))
                     var.trace_add("write", self.__set_enum_var(obj, is_dict, name, var, var_type, obj.nullables[name]))
                     new_vars[name] = var
-                elif var_type == bool:
+                elif var_type is bool:
                     var = tk.BooleanVar(master=self.master)
                     var.set(obj_var or False)
                     var.trace_add("write", self.__set_bool_var(obj, is_dict, name, var))
                     new_vars[name] = var
-                elif var_type == int:
+                elif var_type is int:
                     var = tk.StringVar(master=self.master)
                     var.set("" if obj_var is None else str(obj_var))
                     var.trace_add("write", self.__set_int_var(obj, is_dict, name, var, obj.nullables[name]))
                     new_vars[name] = var
-                elif var_type == float:
+                elif var_type is float:
                     var = tk.StringVar(master=self.master)
                     var.set("" if obj_var is None else str(obj_var))
                     var.trace_add("write", self.__set_float_var(obj, is_dict, name, var, obj.nullables[name]))
@@ -247,28 +236,19 @@ class UIState:
         if is_config:
             for name, var_type in obj.types.items():
                 obj_var = getattr(obj, name)
-                if issubclass(var_type, BaseConfig):
+                if issubclass_safe(var_type, BaseConfig):
                     var = self.__vars[name]
                     var.__set_vars(obj_var)
-                elif var_type == list or get_origin(var_type) == list:
-                    # for lists, the first entry (if it exists) is used
-                    if len(get_args(var_type)) > 0 and issubclass(get_args(var_type)[0], BaseConfig):
-                        if obj_var is not None and len(obj_var) > 0:
-                            var = self.__vars[name]
-                            var.__set_vars(obj_var[0])
-                elif var_type == str:
+                elif var_type is str:
                     var = self.__vars[name]
                     var.set("" if obj_var is None else obj_var)
-                elif issubclass(var_type, Enum):
+                elif issubclass_safe(var_type, Enum):
                     var = self.__vars[name]
                     var.set("" if obj_var is None else str(obj_var))
-                elif var_type == bool:
+                elif var_type is bool:
                     var = self.__vars[name]
                     var.set(obj_var or False)
-                elif var_type == int:
-                    var = self.__vars[name]
-                    var.set("" if obj_var is None else str(obj_var))
-                elif var_type == float:
+                elif var_type in (int, float):
                     var = self.__vars[name]
                     var.set("" if obj_var is None else str(obj_var))
         else:
@@ -282,9 +262,6 @@ class UIState:
                 elif isinstance(obj_var, bool):
                     var = self.__vars[name]
                     var.set(obj_var)
-                elif isinstance(obj_var, int):
-                    var = self.__vars[name]
-                    var.set(str(obj_var))
-                elif isinstance(obj_var, float):
+                elif isinstance(obj_var, int | float):
                     var = self.__vars[name]
                     var.set(str(obj_var))

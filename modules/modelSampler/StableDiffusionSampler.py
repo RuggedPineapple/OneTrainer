@@ -1,20 +1,24 @@
 import inspect
-import os
-from pathlib import Path
-from typing import Callable
-
-import torch
-from PIL.Image import Image
-from tqdm import tqdm
+from collections.abc import Callable
 
 from modules.model.StableDiffusionModel import StableDiffusionModel
-from modules.modelSampler.BaseModelSampler import BaseModelSampler
+from modules.modelSampler.BaseModelSampler import BaseModelSampler, ModelSamplerOutput
 from modules.util import create
+from modules.util.config.SampleConfig import SampleConfig
+from modules.util.enum.AudioFormat import AudioFormat
+from modules.util.enum.FileType import FileType
 from modules.util.enum.ImageFormat import ImageFormat
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.NoiseScheduler import NoiseScheduler
-from modules.util.config.SampleConfig import SampleConfig
+from modules.util.enum.VideoFormat import VideoFormat
+from modules.util.image_util import load_image
 from modules.util.torch_util import torch_gc
+
+import torch
+from torch import nn
+from torchvision.transforms import transforms
+
+from tqdm import tqdm
 
 
 class StableDiffusionSampler(BaseModelSampler):
@@ -25,7 +29,7 @@ class StableDiffusionSampler(BaseModelSampler):
             model: StableDiffusionModel,
             model_type: ModelType,
     ):
-        super(StableDiffusionSampler, self).__init__(train_device, temp_device)
+        super().__init__(train_device, temp_device)
 
         self.model = model
         self.model_type = model_type
@@ -47,7 +51,7 @@ class StableDiffusionSampler(BaseModelSampler):
             text_encoder_layer_skip: int = 0,
             force_last_timestep: bool = False,
             on_update_progress: Callable[[int, int], None] = lambda _, __: None,
-    ) -> Image:
+    ) -> ModelSamplerOutput:
         with self.model.autocast_context:
             generator = torch.Generator(device=self.train_device)
             if random_seed:
@@ -55,8 +59,6 @@ class StableDiffusionSampler(BaseModelSampler):
             else:
                 generator.manual_seed(seed)
 
-            tokenizer = self.pipeline.tokenizer
-            text_encoder = self.pipeline.text_encoder
             noise_scheduler = create.create_noise_scheduler(noise_scheduler, self.pipeline.scheduler, diffusion_steps)
             image_processor = self.pipeline.image_processor
             unet = self.pipeline.unet
@@ -65,55 +67,20 @@ class StableDiffusionSampler(BaseModelSampler):
 
             # prepare prompt
             self.model.text_encoder_to(self.train_device)
-            tokenizer_output = tokenizer(
-                prompt,
-                padding='max_length',
-                truncation=True,
-                max_length=tokenizer.model_max_length,
-                return_tensors="pt",
-            )
-            tokens = tokenizer_output.input_ids.to(self.train_device)
-            if hasattr(text_encoder.config, "use_attention_mask") and text_encoder.config.use_attention_mask:
-                tokens_attention_mask = tokenizer_output.attention_mask.to(self.train_device)
-            else:
-                tokens_attention_mask = None
 
-            negative_tokenizer_output = tokenizer(
-                negative_prompt,
-                padding='max_length',
-                truncation=True,
-                max_length=tokenizer.model_max_length,
-                return_tensors="pt",
+            prompt_embedding = self.model.encode_text(
+                text=prompt,
+                train_device=self.train_device,
+                text_encoder_layer_skip=text_encoder_layer_skip,
             )
-            negative_tokens = negative_tokenizer_output.input_ids.to(self.train_device)
-            if hasattr(text_encoder.config, "use_attention_mask") and text_encoder.config.use_attention_mask:
-                negative_tokens_attention_mask = negative_tokenizer_output.attention_mask.to(self.train_device)
-            else:
-                negative_tokens_attention_mask = None
-
-            text_encoder_output = text_encoder(
-                tokens,
-                attention_mask=tokens_attention_mask,
-                return_dict=True,
-                output_hidden_states=True,
-            )
-            final_layer_norm = text_encoder.text_model.final_layer_norm
-            prompt_embedding = final_layer_norm(
-                text_encoder_output.hidden_states[-(1 + text_encoder_layer_skip)]
+            negative_prompt_embedding = self.model.encode_text(
+                text=negative_prompt,
+                train_device=self.train_device,
+                text_encoder_layer_skip=text_encoder_layer_skip,
             )
 
-            text_encoder_output = text_encoder(
-                negative_tokens,
-                attention_mask=negative_tokens_attention_mask,
-                return_dict=True,
-                output_hidden_states=True,
-            )
-            final_layer_norm = text_encoder.text_model.final_layer_norm
-            negative_prompt_embedding = final_layer_norm(
-                text_encoder_output.hidden_states[-(1 + text_encoder_layer_skip)]
-            )
-
-            combined_prompt_embedding = torch.cat([negative_prompt_embedding, prompt_embedding])
+            combined_prompt_embedding = torch.cat([negative_prompt_embedding, prompt_embedding]) \
+                .to(dtype=self.model.train_dtype.torch_dtype())
 
             self.model.text_encoder_to(self.temp_device)
             torch_gc()
@@ -191,8 +158,26 @@ class StableDiffusionSampler(BaseModelSampler):
             image = image_processor.postprocess(image, output_type='pil', do_denormalize=do_denormalize)
 
             self.model.vae_to(self.temp_device)
+            torch_gc()
 
-            return image[0]
+            return ModelSamplerOutput(
+                file_type=FileType.IMAGE,
+                data=image[0],
+            )
+
+    def __create_erode_kernel(self, device, dtype=torch.float32):
+        kernel_radius = 2
+
+        kernel_size = kernel_radius * 2 + 1
+        kernel_weights = torch.ones(1, 1, kernel_size, kernel_size, dtype=dtype) / (kernel_size * kernel_size)
+        kernel = nn.Conv2d(
+            in_channels=1, out_channels=1, kernel_size=kernel_size, bias=False, padding_mode='replicate',
+            padding=kernel_radius
+        ).to(dtype)
+        kernel.weight.data = kernel_weights
+        kernel.requires_grad_(False)
+        kernel.to(device)
+        return kernel
 
     @torch.no_grad()
     def __sample_inpainting(
@@ -207,10 +192,13 @@ class StableDiffusionSampler(BaseModelSampler):
             cfg_scale: float,
             noise_scheduler: NoiseScheduler,
             cfg_rescale: float = 0.7,
+            sample_inpainting: bool = False,
+            base_image_path: str = "",
+            mask_image_path: str = "",
             text_encoder_layer_skip: int = 0,
             force_last_timestep: bool = False,
             on_update_progress: Callable[[int, int], None] = lambda _, __: None,
-    ) -> Image:
+    ) -> ModelSamplerOutput:
         with self.model.autocast_context:
             generator = torch.Generator(device=self.train_device)
             if random_seed:
@@ -218,8 +206,6 @@ class StableDiffusionSampler(BaseModelSampler):
             else:
                 generator.manual_seed(seed)
 
-            tokenizer = self.pipeline.tokenizer
-            text_encoder = self.pipeline.text_encoder
             noise_scheduler = create.create_noise_scheduler(noise_scheduler, self.pipeline.scheduler, diffusion_steps)
             image_processor = self.pipeline.image_processor
             unet = self.pipeline.unet
@@ -228,72 +214,78 @@ class StableDiffusionSampler(BaseModelSampler):
 
             # prepare conditioning image
             self.model.vae_to(self.train_device)
-            conditioning_image = torch.zeros(
-                (1, 3, height, width),
-                dtype=self.model.train_dtype.torch_dtype(),
-                device=self.train_device,
-            )
-            conditioning_image = conditioning_image
-            latent_conditioning_image = vae.encode(conditioning_image).latent_dist.mode() * vae.config.scaling_factor
-            latent_mask = torch.ones(
-                size=(1, 1, latent_conditioning_image.shape[2], latent_conditioning_image.shape[3]),
-                dtype=self.model.train_dtype.torch_dtype(),
-                device=self.train_device
-            )
+
+            if sample_inpainting:
+                t = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Resize(
+                        (height, width), interpolation=transforms.InterpolationMode.BILINEAR,antialias=True
+                    ),
+                ])
+
+                image = load_image(base_image_path, convert_mode="RGB")
+                image = t(image).to(
+                    dtype=self.model.train_dtype.torch_dtype(),
+                    device=self.train_device,
+                )
+
+                mask = load_image(mask_image_path, convert_mode='L')
+                mask = t(mask).to(
+                    dtype=self.model.train_dtype.torch_dtype(),
+                    device=self.train_device,
+                )
+
+                erode_kernel = self.__create_erode_kernel(self.train_device, dtype=self.model.train_dtype.torch_dtype())
+                eroded_mask = erode_kernel(mask)
+                eroded_mask = (eroded_mask > 0.5).to(dtype=self.model.train_dtype.torch_dtype())
+
+                image = (image * 2.0) - 1.0
+                conditioning_image = (image * (1 - eroded_mask))
+                conditioning_image = conditioning_image.unsqueeze(0)
+
+                latent_conditioning_image = vae.encode(
+                    conditioning_image).latent_dist.mode() * vae.config.scaling_factor
+
+                rescale_mask = transforms.Resize(
+                    (round(mask.shape[1] // 8), round(mask.shape[2] // 8)),
+                    interpolation=transforms.InterpolationMode.BILINEAR,
+                    antialias=True
+                )
+                latent_mask = rescale_mask(mask)
+                latent_mask = (latent_mask > 0).to(dtype=self.model.train_dtype.torch_dtype())
+                latent_mask = latent_mask.unsqueeze(0)
+            else:
+                conditioning_image = torch.zeros(
+                    (1, 3, height, width),
+                    dtype=self.model.train_dtype.torch_dtype(),
+                    device=self.train_device,
+                )
+                latent_conditioning_image = vae.encode(conditioning_image).latent_dist.mode() * vae.config.scaling_factor
+                latent_mask = torch.ones(
+                    size=(1, 1, latent_conditioning_image.shape[2], latent_conditioning_image.shape[3]),
+                    dtype=self.model.train_dtype.torch_dtype(),
+                    device=self.train_device
+                )
+
             self.model.vae_to(self.temp_device)
             torch_gc()
 
             # prepare prompt
             self.model.text_encoder_to(self.train_device)
-            tokenizer_output = tokenizer(
-                prompt,
-                padding='max_length',
-                truncation=True,
-                max_length=tokenizer.model_max_length,
-                return_tensors="pt",
-            )
-            tokens = tokenizer_output.input_ids.to(self.train_device)
-            if hasattr(text_encoder.config, "use_attention_mask") and text_encoder.config.use_attention_mask:
-                tokens_attention_mask = tokenizer_output.attention_mask.to(self.train_device)
-            else:
-                tokens_attention_mask = None
 
-            negative_tokenizer_output = tokenizer(
-                negative_prompt,
-                padding='max_length',
-                truncation=True,
-                max_length=tokenizer.model_max_length,
-                return_tensors="pt",
+            prompt_embedding = self.model.encode_text(
+                text=prompt,
+                train_device=self.train_device,
+                text_encoder_layer_skip=text_encoder_layer_skip,
             )
-            negative_tokens = negative_tokenizer_output.input_ids.to(self.train_device)
-            if hasattr(text_encoder.config, "use_attention_mask") and text_encoder.config.use_attention_mask:
-                negative_tokens_attention_mask = negative_tokenizer_output.attention_mask.to(self.train_device)
-            else:
-                negative_tokens_attention_mask = None
-
-            text_encoder_output = text_encoder(
-                tokens,
-                attention_mask=tokens_attention_mask,
-                return_dict=True,
-                output_hidden_states=True,
-            )
-            final_layer_norm = text_encoder.text_model.final_layer_norm
-            prompt_embedding = final_layer_norm(
-                text_encoder_output.hidden_states[-(1 + text_encoder_layer_skip)]
+            negative_prompt_embedding = self.model.encode_text(
+                text=negative_prompt,
+                train_device=self.train_device,
+                text_encoder_layer_skip=text_encoder_layer_skip,
             )
 
-            text_encoder_output = text_encoder(
-                negative_tokens,
-                attention_mask=negative_tokens_attention_mask,
-                return_dict=True,
-                output_hidden_states=True,
-            )
-            final_layer_norm = text_encoder.text_model.final_layer_norm
-            negative_prompt_embedding = final_layer_norm(
-                text_encoder_output.hidden_states[-(1 + text_encoder_layer_skip)]
-            )
-
-            combined_prompt_embedding = torch.cat([negative_prompt_embedding, prompt_embedding])
+            combined_prompt_embedding = torch.cat([negative_prompt_embedding, prompt_embedding]) \
+                .to(dtype=self.model.train_dtype.torch_dtype())
 
             self.model.text_encoder_to(self.temp_device)
             torch_gc()
@@ -374,61 +366,62 @@ class StableDiffusionSampler(BaseModelSampler):
             image = image_processor.postprocess(image, output_type='pil', do_denormalize=do_denormalize)
 
             self.model.vae_to(self.temp_device)
+            torch_gc()
 
-            return image[0]
+            return ModelSamplerOutput(
+                file_type=FileType.IMAGE,
+                data=image[0],
+            )
 
     def sample(
             self,
-            sample_params: SampleConfig,
+            sample_config: SampleConfig,
             destination: str,
             image_format: ImageFormat,
-            text_encoder_layer_skip: int,
-            force_last_timestep: bool = False,
-            on_sample: Callable[[Image], None] = lambda _: None,
+            video_format: VideoFormat,
+            audio_format: AudioFormat,
+            on_sample: Callable[[ModelSamplerOutput], None] = lambda _: None,
             on_update_progress: Callable[[int, int], None] = lambda _, __: None,
     ):
-        prompt = sample_params.prompt
-        negative_prompt = sample_params.negative_prompt
-
-        if len(self.model.embeddings) > 0:
-            embedding_string = ''.join(self.model.embeddings[0].text_tokens)
-            prompt = prompt.replace("<embedding>", embedding_string)
-            negative_prompt = negative_prompt.replace("<embedding>", embedding_string)
-
         if self.model_type.has_conditioning_image_input():
-            image = self.__sample_inpainting(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                height=sample_params.height,
-                width=sample_params.width,
-                seed=sample_params.seed,
-                random_seed=sample_params.random_seed,
-                diffusion_steps=sample_params.diffusion_steps,
-                cfg_scale=sample_params.cfg_scale,
-                noise_scheduler=sample_params.noise_scheduler,
-                cfg_rescale=0.7 if force_last_timestep else 0.0,
-                text_encoder_layer_skip=text_encoder_layer_skip,
-                force_last_timestep=force_last_timestep,
+            sampler_output = self.__sample_inpainting(
+                prompt=sample_config.prompt,
+                negative_prompt=sample_config.negative_prompt,
+                height=self.quantize_resolution(sample_config.height, 8),
+                width=self.quantize_resolution(sample_config.width, 8),
+                seed=sample_config.seed,
+                random_seed=sample_config.random_seed,
+                diffusion_steps=sample_config.diffusion_steps,
+                cfg_scale=sample_config.cfg_scale,
+                noise_scheduler=sample_config.noise_scheduler,
+                cfg_rescale=0.7 if sample_config.force_last_timestep else 0.0,
+                sample_inpainting=sample_config.sample_inpainting,
+                base_image_path=sample_config.base_image_path,
+                mask_image_path=sample_config.mask_image_path,
+                text_encoder_layer_skip=sample_config.text_encoder_1_layer_skip,
+                force_last_timestep=sample_config.force_last_timestep,
                 on_update_progress=on_update_progress,
             )
         else:
-            image = self.__sample_base(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                height=sample_params.height,
-                width=sample_params.width,
-                seed=sample_params.seed,
-                random_seed=sample_params.random_seed,
-                diffusion_steps=sample_params.diffusion_steps,
-                cfg_scale=sample_params.cfg_scale,
-                noise_scheduler=sample_params.noise_scheduler,
-                cfg_rescale=0.7 if force_last_timestep else 0.0,
-                text_encoder_layer_skip=text_encoder_layer_skip,
-                force_last_timestep=force_last_timestep,
+            sampler_output = self.__sample_base(
+                prompt=sample_config.prompt,
+                negative_prompt=sample_config.negative_prompt,
+                height=self.quantize_resolution(sample_config.height, 8),
+                width=self.quantize_resolution(sample_config.width, 8),
+                seed=sample_config.seed,
+                random_seed=sample_config.random_seed,
+                diffusion_steps=sample_config.diffusion_steps,
+                cfg_scale=sample_config.cfg_scale,
+                noise_scheduler=sample_config.noise_scheduler,
+                cfg_rescale=0.7 if sample_config.force_last_timestep else 0.0,
+                text_encoder_layer_skip=sample_config.text_encoder_1_layer_skip,
+                force_last_timestep=sample_config.force_last_timestep,
                 on_update_progress=on_update_progress,
             )
 
-        os.makedirs(Path(destination).parent.absolute(), exist_ok=True)
-        image.save(destination)
+        self.save_sampler_output(
+            sampler_output, destination,
+            image_format, video_format, audio_format,
+        )
 
-        on_sample(image)
+        on_sample(sampler_output)

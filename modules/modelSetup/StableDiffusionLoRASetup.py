@@ -1,24 +1,31 @@
-from typing import Iterable
-
-import torch
-from torch.nn import Parameter
-
 from modules.model.StableDiffusionModel import StableDiffusionModel
 from modules.modelSetup.BaseStableDiffusionSetup import BaseStableDiffusionSetup
 from modules.module.LoRAModule import LoRAModuleWrapper
-from modules.util import create
-from modules.util.TrainProgress import TrainProgress
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.NamedParameterGroup import NamedParameterGroup, NamedParameterGroupCollection
+from modules.util.optimizer_util import init_model_parameters
+from modules.util.torch_util import state_dict_has_prefix
+from modules.util.TrainProgress import TrainProgress
+
+import torch
+
+PRESETS = {
+    "attn-mlp": ["attentions"],
+    "attn-only": ["attn"],
+    "full": [],
+}
 
 
-class StableDiffusionLoRASetup(BaseStableDiffusionSetup):
+class StableDiffusionLoRASetup(
+    BaseStableDiffusionSetup,
+):
     def __init__(
             self,
             train_device: torch.device,
             temp_device: torch.device,
             debug_mode: bool,
     ):
-        super(StableDiffusionLoRASetup, self).__init__(
+        super().__init__(
             train_device=train_device,
             temp_device=temp_device,
             debug_mode=debug_mode,
@@ -28,54 +35,37 @@ class StableDiffusionLoRASetup(BaseStableDiffusionSetup):
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
-    ) -> Iterable[Parameter]:
-        params = list()
+    ) -> NamedParameterGroupCollection:
+        parameter_group_collection = NamedParameterGroupCollection()
 
         if config.text_encoder.train:
-            params += list(model.text_encoder_lora.parameters())
+            parameter_group_collection.add_group(NamedParameterGroup(
+                unique_name="text_encoder_lora",
+                parameters=model.text_encoder_lora.parameters(),
+                learning_rate=config.text_encoder.learning_rate,
+            ))
 
-        if config.unet.train:
-            params += list(model.unet_lora.parameters())
-
-        return params
-
-    def create_parameters_for_optimizer(
-            self,
-            model: StableDiffusionModel,
-            config: TrainConfig,
-    ) -> Iterable[Parameter] | list[dict]:
-        param_groups = list()
-
-        if config.text_encoder.train:
-            param_groups.append(
-                self.create_param_groups(config, model.text_encoder_lora.parameters(), config.text_encoder.learning_rate)
+        if config.train_any_embedding() or config.train_any_output_embedding():
+            self._add_embedding_param_groups(
+                model.all_text_encoder_embeddings(), parameter_group_collection, config.embedding_learning_rate,
+                "embeddings"
             )
 
         if config.unet.train:
-            param_groups.append(
-                self.create_param_groups(config, model.unet_lora.parameters(), config.unet.learning_rate)
-            )
+            parameter_group_collection.add_group(NamedParameterGroup(
+                unique_name="unet_lora",
+                parameters=model.unet_lora.parameters(),
+                learning_rate=config.unet.learning_rate,
+            ))
 
-        return param_groups
+        return parameter_group_collection
 
-    def setup_model(
+    def __setup_requires_grad(
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
     ):
-        if model.text_encoder_lora is None:
-            model.text_encoder_lora = LoRAModuleWrapper(
-                model.text_encoder, config.lora_rank, "lora_te", config.lora_alpha
-            )
-
-        if model.unet_lora is None:
-            model.unet_lora = LoRAModuleWrapper(
-                model.unet, config.lora_rank, "lora_unet", config.lora_alpha, ["attentions"]
-            )
-
-        model.text_encoder_lora.set_dropout(config.dropout_probability)
-        model.unet_lora.set_dropout(config.dropout_probability)
-
+        self._setup_embeddings_requires_grad(model, config)
         model.text_encoder.requires_grad_(False)
         model.unet.requires_grad_(False)
         model.vae.requires_grad_(False)
@@ -87,38 +77,64 @@ class StableDiffusionLoRASetup(BaseStableDiffusionSetup):
 
         if model.unet_lora is not None:
             train_unet = config.unet.train and \
-                                 not self.stop_unet_training_elapsed(config, model.train_progress)
+                         not self.stop_unet_training_elapsed(config, model.train_progress)
             model.unet_lora.requires_grad_(train_unet)
 
-        model.text_encoder_lora.to(dtype=config.lora_weight_dtype.torch_dtype())
-        model.unet_lora.to(dtype=config.lora_weight_dtype.torch_dtype())
+    def setup_model(
+            self,
+            model: StableDiffusionModel,
+            config: TrainConfig,
+    ):
+        if config.train_any_embedding():
+            model.text_encoder.get_input_embeddings().to(dtype=config.embedding_weight_dtype.torch_dtype())
 
-        model.text_encoder_lora.hook_to_module()
+        create_te = config.text_encoder.train or state_dict_has_prefix(model.lora_state_dict, "lora_te")
+        model.text_encoder_lora = LoRAModuleWrapper(
+            model.text_encoder, "lora_te", config
+        ) if create_te else None
+
+        model.unet_lora = LoRAModuleWrapper(
+            model.unet, "lora_unet", config, config.lora_layers.split(",")
+        )
+
+        if model.lora_state_dict:
+            if create_te:
+                model.text_encoder_lora.load_state_dict(model.lora_state_dict)
+            model.unet_lora.load_state_dict(model.lora_state_dict)
+            model.lora_state_dict = None
+
+
+        if config.text_encoder.train:
+            model.text_encoder_lora.set_dropout(config.dropout_probability)
+        if create_te:
+            model.text_encoder_lora.to(dtype=config.lora_weight_dtype.torch_dtype())
+            model.text_encoder_lora.hook_to_module()
+
+        model.unet_lora.set_dropout(config.dropout_probability)
+        model.unet_lora.to(dtype=config.lora_weight_dtype.torch_dtype())
         model.unet_lora.hook_to_module()
 
         if config.rescale_noise_scheduler_to_zero_terminal_snr:
             model.rescale_noise_scheduler_to_zero_terminal_snr()
             model.force_v_prediction()
 
-        model.optimizer = create.create_optimizer(
-            self.create_parameters_for_optimizer(model, config), model.optimizer_state_dict, config
-        )
-        del model.optimizer_state_dict
+        self._remove_added_embeddings_from_tokenizer(model.tokenizer)
+        self._setup_embeddings(model, config)
+        self._setup_embedding_wrapper(model, config)
+        self.__setup_requires_grad(model, config)
 
-        model.ema = create.create_ema(
-            self.create_parameters(model, config), model.ema_state_dict, config
-        )
-        del model.ema_state_dict
-
-        self.setup_optimizations(model, config)
+        init_model_parameters(model, self.create_parameters(model, config), self.train_device)
 
     def setup_train_device(
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
     ):
-        vae_on_train_device = self.debug_mode or config.align_prop
-        text_encoder_on_train_device = config.text_encoder.train or config.align_prop or not config.latent_caching
+        vae_on_train_device = self.debug_mode or not config.latent_caching
+        text_encoder_on_train_device = \
+            config.text_encoder.train \
+            or config.train_any_embedding() \
+            or not config.latent_caching
 
         model.text_encoder_to(self.train_device if text_encoder_on_train_device else self.temp_device)
         model.vae_to(self.train_device if vae_on_train_device else self.temp_device)
@@ -143,34 +159,7 @@ class StableDiffusionLoRASetup(BaseStableDiffusionSetup):
             config: TrainConfig,
             train_progress: TrainProgress
     ):
-        if model.text_encoder_lora is not None:
-            train_text_encoder = config.text_encoder.train and \
-                                 not self.stop_text_encoder_training_elapsed(config, model.train_progress)
-            model.text_encoder_lora.requires_grad_(train_text_encoder)
-
-        if model.unet_lora is not None:
-            train_unet = config.unet.train and \
-                                 not self.stop_unet_training_elapsed(config, model.train_progress)
-            model.unet_lora.requires_grad_(train_unet)
-
-    def report_learning_rates(
-            self,
-            model,
-            config,
-            scheduler,
-            tensorboard
-    ):
-        lrs = scheduler.get_last_lr()
-        names = []
-        if config.text_encoder.train:
-            names.append("te")
-        if config.unet.train:
-            names.append("unet")
-        assert len(lrs) == len(names)
-
-        lrs = config.optimizer.optimizer.maybe_adjust_lrs(lrs, model.optimizer)
-
-        for name, lr in zip(names, lrs):
-            tensorboard.add_scalar(
-                f"lr/{name}", lr, model.train_progress.global_step
-            )
+        if config.preserve_embedding_norm:
+            self._normalize_output_embeddings(model.all_text_encoder_embeddings())
+            model.embedding_wrapper.normalize_embeddings()
+        self.__setup_requires_grad(model, config)

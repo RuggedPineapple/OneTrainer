@@ -1,10 +1,9 @@
-import os
-import sys
+from util.import_util import script_imports
 
-sys.path.append(os.getcwd())
+script_imports()
 
-from modules.util.args.CaptionUIArgs import CaptionUIArgs
 from modules.ui.CaptionUI import CaptionUI
+from modules.util.args.CaptionUIArgs import CaptionUIArgs
 
 
 def main():

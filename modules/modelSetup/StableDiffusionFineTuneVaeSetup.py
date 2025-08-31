@@ -1,23 +1,23 @@
-from typing import Iterable
-
-import torch
-from torch.nn import Parameter
-
 from modules.model.StableDiffusionModel import StableDiffusionModel
 from modules.modelSetup.BaseStableDiffusionSetup import BaseStableDiffusionSetup
-from modules.util import create
-from modules.util.TrainProgress import TrainProgress
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.NamedParameterGroup import NamedParameterGroup, NamedParameterGroupCollection
+from modules.util.optimizer_util import init_model_parameters
+from modules.util.TrainProgress import TrainProgress
+
+import torch
 
 
-class StableDiffusionFineTuneVaeSetup(BaseStableDiffusionSetup):
+class StableDiffusionFineTuneVaeSetup(
+    BaseStableDiffusionSetup,
+):
     def __init__(
             self,
             train_device: torch.device,
             temp_device: torch.device,
             debug_mode: bool,
     ):
-        super(StableDiffusionFineTuneVaeSetup, self).__init__(
+        super().__init__(
             train_device=train_device,
             temp_device=temp_device,
             debug_mode=debug_mode,
@@ -27,21 +27,16 @@ class StableDiffusionFineTuneVaeSetup(BaseStableDiffusionSetup):
             self,
             model: StableDiffusionModel,
             config: TrainConfig,
-    ) -> Iterable[Parameter]:
-        return model.vae.decoder.parameters()
+    ) -> NamedParameterGroupCollection:
+        parameter_group_collection = NamedParameterGroupCollection()
 
-    def create_parameters_for_optimizer(
-            self,
-            model: StableDiffusionModel,
-            config: TrainConfig,
-    ) -> Iterable[Parameter] | list[dict]:
-        return [
-            self.create_param_groups(
-                config,
-                model.vae.decoder.parameters(),
-                config.learning_rate,
-            )
-        ]
+        parameter_group_collection.add_group(NamedParameterGroup(
+            unique_name="vae",
+            parameters=model.vae.decoder.parameters(),
+            learning_rate=config.learning_rate,
+        ))
+
+        return parameter_group_collection
 
     def setup_model(
             self,
@@ -53,17 +48,7 @@ class StableDiffusionFineTuneVaeSetup(BaseStableDiffusionSetup):
         model.vae.decoder.requires_grad_(True)
         model.unet.requires_grad_(False)
 
-        model.optimizer = create.create_optimizer(
-            self.create_parameters_for_optimizer(model, config), model.optimizer_state_dict, config
-        )
-        del model.optimizer_state_dict
-
-        model.ema = create.create_ema(
-            self.create_parameters(model, config), model.ema_state_dict, config
-        )
-        del model.ema_state_dict
-
-        self.setup_optimizations(model, config)
+        init_model_parameters(model, self.create_parameters(model, config), self.train_device)
 
     def setup_train_device(
             self,
@@ -122,14 +107,3 @@ class StableDiffusionFineTuneVaeSetup(BaseStableDiffusionSetup):
             train_progress: TrainProgress
     ):
         pass
-
-    def report_learning_rates(
-            self,
-            model,
-            config,
-            scheduler,
-            tensorboard
-    ):
-        lr = scheduler.get_last_lr()[0]
-        lr = config.optimizer.optimizer.maybe_adjust_lrs([lr], model.optimizer)[0]
-        tensorboard.add_scalar("lr/vae", lr, model.train_progress.global_step)

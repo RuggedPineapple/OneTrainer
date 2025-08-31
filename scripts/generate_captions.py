@@ -1,14 +1,14 @@
-import os
-import sys
+from util.import_util import script_imports
 
-sys.path.append(os.getcwd())
+script_imports()
 
-import torch
-from modules.util.enum.GenerateCaptionsModel import GenerateCaptionsModel
-from modules.util.args.GenerateCaptionsArgs import GenerateCaptionsArgs
 from modules.module.Blip2Model import Blip2Model
 from modules.module.BlipModel import BlipModel
 from modules.module.WDModel import WDModel
+from modules.util.args.GenerateCaptionsArgs import GenerateCaptionsArgs
+from modules.util.enum.GenerateCaptionsModel import GenerateCaptionsModel
+
+import torch
 
 
 def main():
@@ -25,6 +25,8 @@ def main():
     model.caption_folder(
         sample_dir=args.sample_dir,
         initial_caption=args.initial_caption,
+        caption_prefix=args.caption_prefix,
+        caption_postfix=args.caption_postfix,
         mode=args.mode,
         error_callback=lambda filename: print("Error while processing image " + filename),
         include_subdirectories=args.include_subdirectories

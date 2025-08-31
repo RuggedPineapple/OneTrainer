@@ -1,20 +1,28 @@
-import customtkinter as ctk
-
 from modules.ui.ConfigList import ConfigList
 from modules.ui.SampleParamsWindow import SampleParamsWindow
-from modules.util.config.TrainConfig import TrainConfig
 from modules.util.config.SampleConfig import SampleConfig
+from modules.util.config.TrainConfig import TrainConfig
 from modules.util.ui import components
 from modules.util.ui.UIState import UIState
+
+import customtkinter as ctk
 
 
 class SamplingTab(ConfigList):
 
     def __init__(self, master, train_config: TrainConfig, ui_state: UIState):
-        super(SamplingTab, self).__init__(
-            master, train_config, ui_state, "sample_definition_file_name",
-            "training_samples", "samples.json", "add sample",
+        super().__init__(
+            master,
+            train_config,
+            ui_state,
+            from_external_file=True,
+            attr_name="sample_definition_file_name",
+            config_dir="training_samples",
+            default_config_name="samples.json",
+            add_button_text="Add Sample",
+            add_button_tooltip="Add a new sample configuration.",
             is_full_width=True,
+            show_toggle_button=True
         )
 
     def create_widget(self, master, element, i, open_command, remove_command, clone_command, save_command):
@@ -29,7 +37,7 @@ class SamplingTab(ConfigList):
 
 class SampleWidget(ctk.CTkFrame):
     def __init__(self, master, element, i, open_command, remove_command, clone_command, save_command):
-        super(SampleWidget, self).__init__(
+        super().__init__(
             master=master, corner_radius=10, bg_color="transparent"
         )
 
@@ -93,6 +101,7 @@ class SampleWidget(ctk.CTkFrame):
 
         # button
         self.button = components.icon_button(self, 0, 11, "...", lambda: open_command(self.i, self.ui_state))
+        self.button.configure(width=40)
 
         self.__set_enabled()
 

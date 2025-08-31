@@ -1,16 +1,15 @@
-import os
-import sys
+from util.import_util import script_imports
 
-from modules.module.RembgHumanModel import RembgHumanModel
+script_imports()
 
-sys.path.append(os.getcwd())
-
-import torch
-from modules.util.enum.GenerateMasksModel import GenerateMasksModel
-from modules.util.args.GenerateMasksArgs import GenerateMasksArgs
-from modules.module.RembgModel import RembgModel
 from modules.module.ClipSegModel import ClipSegModel
 from modules.module.MaskByColor import MaskByColor
+from modules.module.RembgHumanModel import RembgHumanModel
+from modules.module.RembgModel import RembgModel
+from modules.util.args.GenerateMasksArgs import GenerateMasksArgs
+from modules.util.enum.GenerateMasksModel import GenerateMasksModel
+
+import torch
 
 
 def main():

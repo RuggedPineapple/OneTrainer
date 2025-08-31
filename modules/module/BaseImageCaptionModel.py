@@ -1,11 +1,14 @@
+import contextlib
 import os
 from abc import ABCMeta, abstractmethod
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
+
+from modules.util import path_util
+from modules.util.image_util import load_image
 
 from PIL import Image
 from tqdm import tqdm
-
-from modules.util import path_util
 
 
 class CaptionSample:
@@ -21,7 +24,7 @@ class CaptionSample:
 
     def get_image(self) -> Image:
         if self.image is None:
-            self.image = Image.open(self.image_filename).convert('RGB')
+            self.image = load_image(self.image_filename, 'RGB')
             self.height = self.image.height
             self.width = self.image.width
 
@@ -32,7 +35,7 @@ class CaptionSample:
             try:
                 with open(self.caption_filename, "r") as f:
                     self.captions = [line.strip() for line in f.readlines() if len(line.strip()) > 0]
-            except:
+            except Exception:
                 self.captions = []
 
         return self.captions
@@ -45,32 +48,21 @@ class CaptionSample:
 
     def save_caption(self):
         if self.captions is not None:
-            try:
-                with open(self.caption_filename, "w", encoding='utf-8') as f:
-                    f.write('\n'.join(self.captions))
-            except:
-                pass
+            with contextlib.suppress(Exception), open(self.caption_filename, "w", encoding='utf-8') as f:
+                f.write('\n'.join(self.captions))
 
 
 class BaseImageCaptionModel(metaclass=ABCMeta):
     @staticmethod
-    def __get_sample_filenames(sample_dir: str, include_subdirectories: bool = False) -> [str]:
-        def __is_supported_image_extension(filename: str) -> bool:
-            ext = os.path.splitext(filename)[1]
-            return path_util.is_supported_image_extension(ext) and '-masklabel.png' not in filename
+    def __get_sample_filenames(sample_dir: str, include_subdirectories: bool = False) -> list[str]:
+        sample_dir = Path(sample_dir)
 
-        filenames = []
-        if include_subdirectories:
-            for root, _, files in os.walk(sample_dir):
-                for filename in files:
-                    if __is_supported_image_extension(filename):
-                        filenames.append(os.path.join(root, filename))
-        else:
-            for filename in os.listdir(sample_dir):
-                if __is_supported_image_extension(filename):
-                    filenames.append(os.path.join(sample_dir, filename))
+        def __is_supported_image_extension(path: Path) -> bool:
+            ext = path.suffix
+            return path_util.is_supported_image_extension(ext) and '-masklabel.png' not in path.name
 
-        return filenames
+        recursive_prefix = "" if not include_subdirectories else "**/"
+        return [str(p) for p in sample_dir.glob(f'{recursive_prefix}*') if __is_supported_image_extension(p)]
 
     @abstractmethod
     def generate_caption(
@@ -87,12 +79,13 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
 
         Returns: the generated caption
         """
-        pass
 
     def caption_image(
             self,
             filename: str,
             initial_caption: str = "",
+            caption_prefix: str = "",
+            caption_postfix: str = "",
             mode: str = 'fill',
     ):
         """
@@ -101,6 +94,8 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
         Parameters:
             filename (`str`): a sample filename
             initial_caption (`str`): an initial caption. the generated caption will start with this string
+            caption_prefix (`str`): add this to the start of the generated caption (before initial caption)
+            caption_postfix (`str`): add this to the end of the generated caption
             mode (`str`): can be one of
                 - replace: creates a new caption for all samples, even if a caption already exists
                 - fill: creates a new caption for all samples without a caption
@@ -112,7 +107,7 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
         if mode == 'fill' and existing_caption is not None and existing_caption != "":
             return
 
-        predicted_caption = self.generate_caption(caption_sample, initial_caption)
+        predicted_caption = self.generate_caption(caption_sample, initial_caption, caption_prefix, caption_postfix)
 
         if mode == 'replace' or mode == 'fill':
             caption_sample.set_caption(predicted_caption)
@@ -124,8 +119,10 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
 
     def caption_images(
             self,
-            filenames: [str],
+            filenames: list[str],
             initial_caption: str = "",
+            caption_prefix: str = "",
+            caption_postfix: str = "",
             mode: str = 'fill',
             progress_callback: Callable[[int, int], None] = None,
             error_callback: Callable[[str], None] = None,
@@ -136,6 +133,8 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
         Parameters:
             filenames (`[str]`): a list of sample filenames
             initial_caption (`str`): an initial caption. the generated caption will start with this string
+            caption_prefix (`str`): add this to the start of the generated caption (before initial caption)
+            caption_postfix (`str`): add this to the end of the generated caption
             mode (`str`): can be one of
                 - replace: creates a new caption for all samples, even if a caption already exists
                 - fill: creates a new caption for all samples without a caption
@@ -148,8 +147,8 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
             progress_callback(0, len(filenames))
         for i, filename in enumerate(tqdm(filenames)):
             try:
-                self.caption_image(filename, initial_caption, mode)
-            except Exception as e:
+                self.caption_image(filename, initial_caption, caption_prefix, caption_postfix, mode)
+            except Exception:
                 if error_callback is not None:
                     error_callback(filename)
             if progress_callback is not None:
@@ -159,6 +158,8 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
             self,
             sample_dir: str,
             initial_caption: str = "",
+            caption_prefix: str = "",
+            caption_postfix: str = "",
             mode: str = 'fill',
             progress_callback: Callable[[int, int], None] = None,
             error_callback: Callable[[str], None] = None,
@@ -170,6 +171,8 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
         Parameters:
             sample_dir (`str`): directory where samples are located
             initial_caption (`str`): an initial caption. the generated caption will start with this string
+            caption_prefix (`str`): add this to the start of the generated caption (before initial caption)
+            caption_postfix (`str`): add this to the end of the generated caption
             mode (`str`): can be one of
                 - replace: creates a new caption for all samples, even if a caption already exists
                 - fill: creates a new caption for all samples without a caption
@@ -183,6 +186,8 @@ class BaseImageCaptionModel(metaclass=ABCMeta):
         self.caption_images(
             filenames=filenames,
             initial_caption=initial_caption,
+            caption_prefix=caption_prefix,
+            caption_postfix=caption_postfix,
             mode=mode,
             progress_callback=progress_callback,
             error_callback=error_callback,
